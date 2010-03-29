@@ -1,9 +1,55 @@
-"""qa, a testing library"""
+"""a testing library
+
+Intended Usage:
+
+Each project tends to have the following a "test runner" module that is
+responsible for running the tests for each project.  In addition.
+
+An example project might look like the following:
+
+ - project/ 
+   - somelib/
+     - module1.py
+     - module2.py
+   - tests/
+     - module1_test.py
+     - module2_test.py
+   - runtests.py
+
+-- runtests.py:
+# Invoke this to run all the tests for the project
+import qa
+# Import the test cases:
+import tests.module1_test
+import tests.module2_test
+
+if __name__ == '__main__':
+    qa.main()
+
+-- module1_test.py:
+
+import contextlib    
+import qa
+
+@qa.testcase()
+def test_module1_some_function(context):
+    qa.expect_eq(some_function(a, b, c), some_result)
+
+@contextlib.contextmanager
+def setup_user(ctx):
+    user = ctx['user'] = create_user()
+    yield
+    del ctx['user']
+    delete_user(user)
+
+@qa.testcase(requires=[setup_user]) 
+def test_module1_with_a_user(ctx):
+    qa.expect(ctx['user'])
+"""
 
 __author__ = 'Brandon Bickford <bickfordb@gmail.com>'
 
-
-
+import contextlib
 import logging
 import operator
 import optparse
@@ -19,6 +65,15 @@ all_test_cases = []
 _log = logging.getLogger('qa')
 
 def testcase(group=None, name=None, requires=()):
+    """Decorator for creating a test case
+
+    Arguments
+    group -- string, the group of the test.  This defaults to the module name
+    name -- string, the name of the test.  This defaults to the function name
+    requires -- sequence of context managers that take a dictionary paramter. Each context manager is called one at a time
+
+    Returns
+    """
     def case_decorator(function):
         name_ = function.__name__ if name is None else name
         if group is None:
@@ -57,22 +112,32 @@ class TestCase(object):
 class Failure(Exception):
     pass
 
-def expect_function(function, msg, doc):
+def make_expect_function(function, msg, doc):
+    """Function wrapper (decorator) for building new 'expect_' functions"""
     def wrapper(*args):
         if not function(*args):
             raise Failure("expected: " + (msg % args))
     wrapper.__doc__ = doc
     return wrapper
 
-expect_eq = expect_function(operator.eq, '%r == %r', 'expect that left is equal to right')
-expect_ne = expect_function(operator.ne, '%r != %r', 'expect that left is not equal to right')
-expect_gt = expect_function(operator.gt, '%r > %r', 'expect the left is greater than right')
-expect_ge = expect_function(operator.ge, '%r >= %r', 'expect that left is greater than or equal to right')
-expect_le = expect_function(operator.le, '%r <= %r', 'expect that left is less than or equal to right')
-expect_lt = expect_function(operator.lt, '%r < %r', 'expect that left is less than right')
-expect_not_none = expect_function(lambda x: x is not None, '%r is not None', 'expect is not None')
-expect_not = expect_function(lambda x: x, 'not %r', 'expect evaluates False')
-expect = expect_function(lambda x: x, '%r', 'expect evaluates True')
+expect_eq = make_expect_function(operator.eq, '%r == %r', 'expect that left is equal to right')
+expect_ne = make_expect_function(operator.ne, '%r != %r', 'expect that left is not equal to right')
+expect_gt = make_expect_function(operator.gt, '%r > %r', 'expect the left is greater than right')
+expect_ge = make_expect_function(operator.ge, '%r >= %r', 'expect that left is greater than or equal to right')
+expect_le = make_expect_function(operator.le, '%r <= %r', 'expect that left is less than or equal to right')
+expect_lt = make_expect_function(operator.lt, '%r < %r', 'expect that left is less than right')
+expect_not_none = make_expect_function(lambda x: x is not None, '%r is not None', 'expect is not None')
+expect_not = make_expect_function(lambda x: not x, 'not %r', 'expect evaluates False')
+expect = make_expect_function(lambda x: x, '%r', 'expect evaluates True')
+
+def _raises(exception_type, function, *args, **kwargs):
+    try:
+        function(*args, **kwargs)
+        return False
+    except exception_type, exception:
+        return True
+
+expect_raises = make_expect_function(_raises, '%r is raised by %r', 'expect that an exception is raised')
 
 option_parser = optparse.OptionParser()
 option_parser.add_option('-v', '--verbose', action='store_true')
@@ -80,18 +145,18 @@ option_parser.add_option('-f', '--filter', dest='filter', action='append')
 option_parser.add_option('-m', '--mode', default='thread', choices=['single', 'process', 'thread'])
 option_parser.add_option('-w', '--num-workers', default=10, type='int', help='The number of workers (if mode is "process" or "thread")')
 
-def main(init_logging=True):
+def main(init_logging=True, test_cases=None):
     """main method"""
     options, args = option_parser.parse_args()
     if init_logging:
         level = logging.DEBUG if options.verbose else logging.INFO
         logging.basicConfig(level=level, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    test_cases = filter_test_cases(all_test_cases, options.filter) if options.filter else all_test_cases
-    run_method = {
-            "thread": run_test_cases_multithread,
+    if test_cases is None:
+        test_cases = all_test_cases
+    test_cases = filter_test_cases(test_cases, options.filter) if options.filter else test_cases
+    run_method = {"thread": run_test_cases_multithread,
             "process": run_test_cases_multiprocess,
-            "single": run_test_cases_singlethread,
-    }[options.mode]
+            "single": run_test_cases_singlethread}[options.mode]
     run_method = run_test_cases_multithread
     test_results = run_method(test_cases, options)
     print_test_results(test_results)
@@ -153,9 +218,9 @@ def _run_test_case(test_case, options):
     duration = None
     t0 = time.time()
     try:
-        for requirement in test_case.requires:
-            requirement(ctx)
-        test_case.callable(ctx)
+        requirements = [requirement(ctx) for requirement in test_case.requires]
+        with contextlib.nested(*requirements):
+            test_case.callable(ctx)
         status = 'ok'
     except Failure:
         status = 'failure'
@@ -172,6 +237,15 @@ def run_test_cases_singlethread(test_cases, options):
         yield _run_test_case(test_case, options)
 
 def print_test_results(test_results, file=None):
+    """Print a stream of test results
+
+    Each test error or failure will be printed to 'file'
+
+    Arguments
+    test_results -- stream of test results
+    file -- None
+    """
+
     if file is None:
         file = sys.stderr
     failures = 0
@@ -185,16 +259,7 @@ def print_test_results(test_results, file=None):
         else:
             ok += 1
         if result['error'] or result['failure']:
-           has_error = True 
-           print >> file, '=' * 80
-           test_case_module = result['test_case'].callable.__module__
-           test_case_name = result['test_case'].callable.__name__
-           failure_type = 'ERROR' if result['error'] else 'FAILURE'
-           print >> file, '%s: %s' % (failure_type, result['test_case'].group_and_name())
-           print >> file, '-' * 80
-           for line in traceback.format_exception(*(result['error'] or result['failure']), limit=25):
-               file.write(line)
-           print >> file, '=' * 80
+            _log.error('test %r failed', result['test_case'].group_and_name(), exc_info=result['error'] or result['failure'])
     _log.info('executed ok: %d, errors: %d, failures: %d', ok, errors, failures) 
 
 if __name__ == '__main__': 
