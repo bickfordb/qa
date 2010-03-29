@@ -32,3 +32,8 @@ def test_requires(ctx):
     """Make sure requires works"""
     qa.expect_eq(ctx['foo'], 1)   
 
+@qa.testcase()
+def test_should_fail(ctx):
+    with qa.expect_raises_ctx(KeyError):
+        {}[0]
+

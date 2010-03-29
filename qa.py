@@ -139,6 +139,29 @@ def _raises(exception_type, function, *args, **kwargs):
 
 expect_raises = make_expect_function(_raises, '%r is raised by %r', 'expect that an exception is raised')
 
+@contextlib.contextmanager
+def expect_raises_ctx(exc_type):
+    """Like expect_raises but in contextmanager form
+
+    Usage:
+
+    @qa.testcase()
+    def my_test(ctx):
+        with expect_raises_ctx(MyException):
+            two = 1 + 1
+            raise MyException
+        # succeeds
+
+    """
+
+
+    try:
+        yield
+    except exc_type, exception:
+        pass
+    else:
+        raise qa.Failure("expected %r to be raised" % (exc_type, ))
+
 option_parser = optparse.OptionParser()
 option_parser.add_option('-v', '--verbose', action='store_true')
 option_parser.add_option('-f', '--filter', dest='filter', action='append')
