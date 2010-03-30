@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+"""Test runner module"""
 import qa
 
 import tests

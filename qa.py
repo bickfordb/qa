@@ -90,12 +90,14 @@ def testcase(group=None, name=None, requires=()):
     return case_decorator
 
 class TestCase(object):
-    def __init__(self, callable=None, group=None, name=None, requires=(), description=None):
+    def __init__(self, callable=None, group=None, name=None, requires=(), description=None, disabled=False, disabled_reason=''):
         self.group = group
         self.name = name
         self.callable = callable
         self.requires = tuple(requires)
         self.description = description
+        self.disabled = disabled
+        self.disabled_reason = disabled_reason
 
     def group_and_name(self):
         return '%s:%s' % (self.group, self.name)
@@ -130,6 +132,8 @@ expect_lt = make_expect_function(operator.lt, '%r < %r', 'expect that left is le
 expect_not_none = make_expect_function(lambda x: x is not None, '%r is not None', 'expect is not None')
 expect_not = make_expect_function(lambda x: not x, 'not %r', 'expect evaluates False')
 expect = make_expect_function(lambda x: x, '%r', 'expect evaluates True')
+expect_contains = make_expect_function(operator.contains, '%r in %r', 'expect left is in right')
+expect_isinstance = make_expect_function(isinstance, '%r isinstance %r', 'expect left is an instance of right')
 
 def _raises(exception_type, function, *args, **kwargs):
     try:
@@ -138,24 +142,21 @@ def _raises(exception_type, function, *args, **kwargs):
     except exception_type, exception:
         return True
 
-expect_raises = make_expect_function(_raises, '%r is raised by %r', 'expect that an exception is raised')
+expect_raises_func = make_expect_function(_raises, '%r is raised by %r', 'expect that an exception is raised')
 
 @contextlib.contextmanager
-def expect_raises_ctx(exc_type):
-    """Like expect_raises but in contextmanager form
+def expect_raises(exc_type):
+    """Like expect_raises_func but in contextmanager form
 
     Usage:
 
     @qa.testcase()
     def my_test(ctx):
-        with expect_raises_ctx(MyException):
+        with expect_raises(MyException):
             two = 1 + 1
             raise MyException
         # succeeds
-
     """
-
-
     try:
         yield
     except exc_type, exception:
@@ -165,9 +166,21 @@ def expect_raises_ctx(exc_type):
 
 option_parser = optparse.OptionParser()
 option_parser.add_option('-v', '--verbose', action='store_true')
-option_parser.add_option('-f', '--filter', dest='filter', action='append')
-option_parser.add_option('-m', '--mode', default='thread', choices=['single', 'process', 'thread'])
+option_parser.add_option('-f', '--filter', dest='filter', action='append', help='Run only tests that match this regular epxression pattern.  Test names are of the form "dotted-module-path:function-name"', default=[])
+option_parser.add_option('-m', '--concurrency-mode', default='thread', choices=['single', 'process', 'thread'])
 option_parser.add_option('-w', '--num-workers', default=10, type='int', help='The number of workers (if mode is "process" or "thread")')
+
+def _make_name_filter(patterns):
+    if patterns:
+        patterns = map(re.compile, patterns)
+        def filter_function(test_case):
+            for p in patterns:
+                if p.search(test_case.group_and_name()):
+                    return True
+            return False
+    else:
+        filter_function = lambda test_case: True
+    return filter_function
 
 def main(init_logging=True, test_cases=None):
     """main method"""
@@ -177,27 +190,19 @@ def main(init_logging=True, test_cases=None):
         logging.basicConfig(level=level, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     if test_cases is None:
         test_cases = all_test_cases
-    test_cases = filter_test_cases(test_cases, options.filter) if options.filter else test_cases
-    run_method = {"thread": run_test_cases_multithread,
-            "process": run_test_cases_multiprocess,
-            "single": run_test_cases_singlethread}[options.mode]
-    run_method = run_test_cases_multithread
-    test_results = run_method(test_cases, options)
-    print_test_results(test_results)
+    name_filter = _make_name_filter(options.filter)
+    test_cases = (t for t in test_cases if name_filter(t))
 
-def filter_test_cases(test_cases, group_and_name_filters):
-    """Filter a stream of test cases according to a list of group and name filters"""
-    patterns = map(re.compile, group_and_name_filters)
-    for t in test_cases:
-        name = t.group_and_name()
-        if not patterns:
-            yield t
-        else:
-            for p in patterns:
-                if not p.search(name):
-                    break
-            else:
-                yield t
+    if options.concurrency_mode == "single":
+        _log.debug('executing tests in single threaded mode')
+        test_results = run_test_cases_singlethread(test_cases)
+    elif options.concurrency_mode == "process":
+        _log.debug('executing tests in multiprocess mode')
+        test_results = run_test_cases_multiprocess(test_cases, num_workers=options.num_workers)
+    else:
+        _log.debug('executing tests in multithreaded mode')
+        test_results = run_test_cases_multithread(test_cases, num_workers=options.num_workers)
+    print_test_results(test_results)
 
 def _run_and_queue_result(a_queue, tag, function, *args, **kwargs):
     try:
@@ -206,37 +211,32 @@ def _run_and_queue_result(a_queue, tag, function, *args, **kwargs):
     except Exception:
         _log.exception('An exception occurred')
 
-def run_test_cases_multithread(test_cases, options):
+def run_test_cases_multithread(test_cases, num_workers):
     """Run test cases multithreaded"""
-    max_running = options.num_workers - 1
     running = 0
     queue = Queue.Queue()
     for tag, test_case in enumerate(test_cases):
-        if running == max_running:
+        if test_case.disabled:
+            yield dict(test_case=test_case, skipped=True, error=None, failure=None, duration=0)
+            continue
+        if running >= num_workers:
             tag, result = queue.get()
             yield test_result
             running -= 1
         _log.debug("starting %r", test_case)
-        thread.start_new_thread(_run_and_queue_result, (queue, tag, _run_test_case, test_case, options))
+        thread.start_new_thread(_run_and_queue_result, (queue, tag, _run_test_case, test_case))
         running += 1 
     while running > 0:
         tag, result = queue.get()
         yield result
         running -= 1
 
-def run_test_cases_multiprocess(test_cases, options):
+def run_test_cases_multiprocess(test_cases, num_workers):
     """Run test cases in a separate process for each."""
     raise NotImplementedError("multiprocess not implemented")
 
-def mk_test_result(test_cases, failure=None, error=None, duration=None):
-    return {'test_case': test_case,
-            'failure': None,
-            'error': None,
-            'duration': None}
-
-def _run_test_case(test_case, options):
+def _run_test_case(test_case):
     ctx = {}
-    ctx.update(options.__dict__)
     error = None
     failure = None
     duration = None
@@ -245,20 +245,23 @@ def _run_test_case(test_case, options):
         requirements = [requirement(ctx) for requirement in test_case.requires]
         with contextlib.nested(*requirements):
             test_case.callable(ctx)
-        status = 'ok'
+        status = 'passed'
     except Failure:
-        status = 'failure'
+        status = 'failed'
         failure = sys.exc_info()
     except Exception:
-        status = 'error'
+        status = 'crashed'
         error = sys.exc_info()
-    _log.debug('%s: %s', status, test_case.group_and_name())
-    return dict(test_case=test_case, error=error, failure=failure, duration=time.time() - t0)
+    _log.debug('test %s: %r', status, test_case.group_and_name())
+    return dict(test_case=test_case, error=error, skipped=False, failure=failure, duration=time.time() - t0)
 
-def run_test_cases_singlethread(test_cases, options):
+def run_test_cases_singlethread(test_cases):
     """Run a list of test cases in a single thread"""
     for test_case in test_cases:
-        yield _run_test_case(test_case, options)
+        if test_case.disabled:
+            yield dict(test_case=test_case, skipped=True, error=None, failure=None, duration=0)
+        else:
+            yield _run_test_case(test_case)
 
 def print_test_results(test_results, file=None):
     """Print a stream of test results
@@ -269,22 +272,24 @@ def print_test_results(test_results, file=None):
     test_results -- stream of test results
     file -- None
     """
-
     if file is None:
         file = sys.stderr
     failures = 0
     errors = 0
+    skipped = 0
     ok = 0
     for result in test_results:
         if result['error']:
             errors += 1
         elif result['failure']:
             failures += 1
+        elif result['skipped']:
+            skipped += 1
         else:
             ok += 1
         if result['error'] or result['failure']:
             _log.error('test %r failed', result['test_case'].group_and_name(), exc_info=result['error'] or result['failure'])
-    _log.info('executed ok: %d, errors: %d, failures: %d', ok, errors, failures) 
+    _log.info('executed ok: %d, errors: %d, failures: %d, skipped: %d', ok, errors, failures, skipped) 
 
 if __name__ == '__main__': 
     main()
