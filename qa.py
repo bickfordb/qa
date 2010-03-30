@@ -235,8 +235,11 @@ def run_test_cases_multiprocess(test_cases, num_workers):
     """Run test cases in a separate process for each."""
     raise NotImplementedError("multiprocess not implemented")
 
+class Context(object):
+    pass
+
 def _run_test_case(test_case):
-    ctx = {}
+    ctx = Context()
     error = None
     failure = None
     duration = None

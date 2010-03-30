@@ -24,16 +24,16 @@ def test_expect_not_none(ctx):
 
 @contextlib.contextmanager
 def _setup_example(ctx):
-    ctx['foo'] = 1
+    ctx.foo = 1
     try:
         yield
     finally:
-        del ctx['foo']
+        del ctx.foo
 
 @qa.testcase(requires=[_setup_example])
 def test_requires(ctx):
     """Make sure requires works"""
-    qa.expect_eq(ctx['foo'], 1)   
+    qa.expect_eq(ctx.foo, 1)   
 
 @qa.testcase()
 def expect_raises_should_work(ctx):
