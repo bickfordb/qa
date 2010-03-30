@@ -2,8 +2,9 @@
 
 Intended Usage:
 
-Each project tends to have the following a "test runner" module that is
-responsible for running the tests for each project.  In addition.
+A "test runner" module that is responsible for running the tests for each
+project.  Tests for each module or piece of functionality is often grouped
+together into one test module.  
 
 An example project might look like the following:
 
