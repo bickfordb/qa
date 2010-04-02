@@ -54,7 +54,7 @@ qa is simple testing library for Python.
 
 Each project should have a test runner module which imports all of the test module which need to run and executing `qa.main()` when the module is invoked as the main module.
 
-### runtests.py 
+*runtests.py*
 
     #!/usr/bin/env python
     import qa
@@ -68,7 +68,7 @@ Each project should have a test runner module which imports all of the test modu
 
 Here's an example test case module.  Test cases are built by writing functions and adding the `@qa.testcase()` decorator 
 
-### tests/mylibrary/addition.py
+*tests/mylibrary/addition.py*
 
     import qa
 
