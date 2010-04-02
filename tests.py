@@ -45,6 +45,19 @@ def expect_raises_should_work(ctx):
 def should_be_skipped(ctx):
     raise qa.Failure
 
-should_be_skipped.disabled = True
-should_be_skipped.disabled_reason = "This test always seems to fail"
+@qa.testcase()
+def context_works_like_object_and_dict(ctx):
+    ctx.x = 1
+    qa.expect_eq(ctx['x'], 1)
+    del ctx['x']
+    ctx.x = 1
+    del ctx.x
+    ctx.x = 1
+    qa.expect_eq(ctx.x, 1)
+    qa.expect_eq(list(ctx), ['x'])
+    qa.expect_eq(list(ctx.values()), [1])
+    qa.expect_eq(list(ctx.items()), [('x', 1)])
+
+should_be_skipped.skip = True
+should_be_skipped.skip_reason = "This test always seems to fail"
 

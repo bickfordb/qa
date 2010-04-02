@@ -1,4 +1,4 @@
-"""a testing library
+"""A testing library
 
 Intended Usage:
 
@@ -51,9 +51,14 @@ def test_module1_with_a_user(ctx):
 __author__ = 'Brandon Bickford <bickfordb@gmail.com>'
 
 import contextlib
+import datetime
+import fcntl
 import logging
 import operator
 import optparse
+import os
+import cPickle as pickle 
+import marshal
 import re
 import sys
 import thread
@@ -90,14 +95,18 @@ def testcase(group=None, name=None, requires=()):
     return case_decorator
 
 class TestCase(object):
-    def __init__(self, callable=None, group=None, name=None, requires=(), description=None, disabled=False, disabled_reason=''):
+    """TestCase
+
+    These are usually made with the @testcase decorator
+    """
+    def __init__(self, callable=None, group='', name='', requires=(), description='', skip=False, skip_reason=''):
         self.group = group
         self.name = name
         self.callable = callable
         self.requires = tuple(requires)
         self.description = description
-        self.disabled = disabled
-        self.disabled_reason = disabled_reason
+        self.skip = skip
+        self.skip_reason = skip_reason
 
     def group_and_name(self):
         return '%s:%s' % (self.group, self.name)
@@ -113,6 +122,7 @@ class TestCase(object):
                 (type(other), self.group, other.callable, other.requires, other.description))
 
 class Failure(Exception):
+    """A test failure which is not a crash"""
     pass
 
 def make_expect_function(function, msg, doc):
@@ -134,6 +144,90 @@ expect_not = make_expect_function(lambda x: not x, 'not %r', 'expect evaluates F
 expect = make_expect_function(lambda x: x, '%r', 'expect evaluates True')
 expect_contains = make_expect_function(operator.contains, '%r in %r', 'expect left is in right')
 expect_isinstance = make_expect_function(isinstance, '%r isinstance %r', 'expect left is an instance of right')
+
+class TestResult(object):
+    """A test result
+
+    Construct Arguments
+    group -- str, test case group name
+    name -- str, test case name
+    description -- str, test case description
+    skipped -- bool, whether or not this test case was skipped
+    skipped_reason -- str, reason the test case was skipped
+    error -- exc_info tuple, an unhandled Exception that occured while the test was running
+    error_msg -- str, crash message if an exc_info tuple isn't available (e.g. not pickleable)
+    failure -- exc_info tuple, a Failure which occurred while the test was running
+    failure_msg -- str, a failure message
+    started_at -- datetime or None
+    ended_at -- datetime or None
+
+    """
+    def __init__(self, group='', name='', description='', skipped=False, skipped_reason='', error=None,
+            error_msg='', failure=None, failure_msg='', started_at=None, ended_at=None):
+        self.group = group
+        self.name = name
+        self.description = description
+        self.skipped = skipped
+        self.skipped_reason = skipped_reason
+        self.error = error
+        self.error_msg = error_msg
+        self.failure = failure
+        self.failure_msg = failure_msg
+        self.started_at = started_at
+        self.ended_at = ended_at
+
+    def __getstate__(self):
+        return {'group': self.group, 
+                'name': self.name,
+                'description': self.description,
+                'skipped': self.skipped,
+                'skipped_reason': self.skipped_reason,
+                'error': None, # exc_info isn't pickleable
+                'error_msg': self.error_msg if not self.error else 'Unpickleable error',
+                'failure': None, # exc_info isn't pickleable
+                'failure_msg': self.failure_msg if not self.failure else 'Unpickleable failure',
+                'started_at': self.started_at,
+                'ended_at': self.ended_at}
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    @property
+    def is_success(self):
+        return (not self.skipped and
+                not self.error and
+                not self.error_msg and
+                not self.failure and
+                not self.failure_msg)
+
+    @property
+    def is_error(self):
+        return bool(self.error or self.error_msg)
+
+    @property
+    def is_failure(self):
+        return bool(self.failure or self.failure_msg)
+
+    @property 
+    def duration(self):
+        """Get the duration time delta of the test"""
+        if self.started_at is not None and self.ended_at is not None:
+            return self.ended_at - self.started_at
+
+    @property
+    def status(self):
+        if self.is_error:
+            return u'crashed'
+        elif self.is_failure:
+            return u'failed'
+        elif self.skipped:
+            return u'skipped'
+        else:
+            return u'ok'
+
+    @property
+    def group_and_name(self):
+        return u'%s:%s' % (self.group, self.name)
 
 def _raises(exception_type, function, *args, **kwargs):
     try:
@@ -182,7 +276,7 @@ def _make_name_filter(patterns):
         filter_function = lambda test_case: True
     return filter_function
 
-def main(init_logging=True, test_cases=None):
+def main(init_logging=True, test_cases=None, plugins=None):
     """main method"""
     options, args = option_parser.parse_args()
     if init_logging:
@@ -193,16 +287,25 @@ def main(init_logging=True, test_cases=None):
     name_filter = _make_name_filter(options.filter)
     test_cases = (t for t in test_cases if name_filter(t))
 
+    if plugins is None:
+        plugins = _plugins
+
     if options.concurrency_mode == "single":
         _log.debug('executing tests in single threaded mode')
-        test_results = run_test_cases_singlethread(test_cases)
+        test_results = run_test_cases_singlethread(test_cases, plugins=plugins)
     elif options.concurrency_mode == "process":
         _log.debug('executing tests in multiprocess mode')
-        test_results = run_test_cases_multiprocess(test_cases, num_workers=options.num_workers)
+        test_results = run_test_cases_multiprocess(test_cases, num_workers=options.num_workers, plugins=plugins)
     else:
         _log.debug('executing tests in multithreaded mode')
-        test_results = run_test_cases_multithread(test_cases, num_workers=options.num_workers)
-    print_test_results(test_results)
+        test_results = run_test_cases_multithread(test_cases, num_workers=options.num_workers, plugins=plugins)
+    print_test_results(test_results, plugins=plugins)
+
+_plugins = []
+
+def register_plugin(plugin):
+    if plugin not in _plugins:
+        _plugins.append(plugin)
 
 def _run_and_queue_result(a_queue, tag, function, *args, **kwargs):
     try:
@@ -211,62 +314,136 @@ def _run_and_queue_result(a_queue, tag, function, *args, **kwargs):
     except Exception:
         _log.exception('An exception occurred')
 
-def run_test_cases_multithread(test_cases, num_workers):
+def _is_skip_test_case(test_case, plugins):
+    skip = test_case.skip
+    skip_reason = test_case.skip_reason
+    if not skip:
+        for plugin in plugins:
+            should_run = plugin.should_run_test_case(test_case)
+            if should_run == True:
+                continue
+            elif should_run == False:
+                skip = True
+                skip_reason = ''
+            else:
+                skip = True
+                skip_reason = unicode(should_run)
+                break
+    if skip:
+        return TestResult(
+                name=test_case.name,
+                group=test_case.group, 
+                description=test_case.description,
+                skipped=True,
+                skipped_reason=test_case.skip_reason)
+
+def run_test_cases_multithread(test_cases, num_workers, plugins):
     """Run test cases multithreaded"""
     running = 0
     queue = Queue.Queue()
     for tag, test_case in enumerate(test_cases):
-        if test_case.disabled:
-            yield dict(test_case=test_case, skipped=True, error=None, failure=None, duration=0)
+        skip_test_result = _is_skip_test_case(test_case, plugins)
+        if skip_test_result is not None:
+            yield skip_test_result
             continue
         if running >= num_workers:
             tag, result = queue.get()
             yield test_result
             running -= 1
         _log.debug("starting %r", test_case)
-        thread.start_new_thread(_run_and_queue_result, (queue, tag, _run_test_case, test_case))
+        thread.start_new_thread(_run_and_queue_result, (queue, tag, _run_test_case, test_case, plugins))
         running += 1 
-    while running > 0:
-        tag, result = queue.get()
-        yield result
-        running -= 1
+        while running > 0:
+            tag, result = queue.get()
+            yield result
+            running -= 1
 
-def run_test_cases_multiprocess(test_cases, num_workers):
+def run_test_cases_multiprocess(test_cases, num_workers, plugins):
     """Run test cases in a separate process for each."""
-    raise NotImplementedError("multiprocess not implemented")
+    for tag, test_case in enumerate(test_cases):
+        skip_test_result = _is_skip_test_case(test_case, plugins)
+        if skip_test_result:
+            yield skip_test_result
+            continue
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid != 0: # we're the parent
+            os.close(w)
+            r = os.fdopen(r, 'r')
+            flags = fcntl.fcntl(r.fileno(), fcntl.F_GETFL)
+            fcntl.fcntl(r.fileno(), fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+            somepid, status = os.waitpid(pid, 0)
+            buf = r.read()
+            obj = pickle.loads(buf)
+            r.close()
+            yield obj
+        else:
+            os.close(r)
+            w = os.fdopen(w, 'w')
+            flags = fcntl.fcntl(w.fileno(), fcntl.F_GETFL)
+            fcntl.fcntl(w.fileno(), fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+            test_result = _run_test_case(test_case, plugins)
+            pickle.dump(test_result, w)
+            w.flush()
+            w.close()
+            sys.exit(0)
 
-class Context(object):
-    pass
+class Context(dict):
+    def __getattr__(self, attr):
+        try:
+            return self.__getitem__(attr)
+        except KeyError:
+            raise AttributeError
 
-def _run_test_case(test_case):
+    def __setattr__(self, attr, val):
+        self.__setitem__(attr, val)
+
+    def __delattr__(self, attr):
+        try:
+            return self.__delitem__(attr)
+        except KeyError:
+            raise AttributeError
+
+def _run_test_case(test_case, plugins):
     ctx = Context()
     error = None
     failure = None
     duration = None
     t0 = time.time()
+    test_result = TestResult(group=test_case.group, name=test_case.name, description=test_case.description, started_at=datetime.datetime.now())
     try:
-        requirements = [requirement(ctx) for requirement in test_case.requires]
+        requirements = []
+        for plugin in plugins:
+            for requirement in plugin.extra_test_case_requirements(test_case):
+                requirements.append(requirement(ctx))
+        requirements.extend(requirement(ctx) for requirement in test_case.requires)
         with contextlib.nested(*requirements):
+            for plugin in plugins:
+                plugin.will_run_test_case(test_case)
             test_case.callable(ctx)
         status = 'passed'
     except Failure:
         status = 'failed'
-        failure = sys.exc_info()
+        test_result.failure = sys.exc_info()
     except Exception:
         status = 'crashed'
-        error = sys.exc_info()
-    _log.debug('test %s: %r', status, test_case.group_and_name())
-    return dict(test_case=test_case, error=error, skipped=False, failure=failure, duration=time.time() - t0)
+        test_result.error = sys.exc_info()
+    test_result.ended_at = datetime.datetime.now()
+    _log.debug('test %s: %r', test_result.status, test_result.group_and_name)
+    for plugin in plugins:
+        plugin.did_run_test_case(test_case, test_result)
+    return test_result
 
-def run_test_cases_singlethread(test_cases):
+def run_test_cases_singlethread(test_cases, plugins):
     """Run a list of test cases in a single thread"""
     for test_case in test_cases:
-        if test_case.disabled:
-            yield dict(test_case=test_case, skipped=True, error=None, failure=None, duration=0)
+        skip_test_result = _is_skip_test_case(test_case, plugins)
+        if skip_test_result is not None:
+            yield skip_test_result
         else:
-            yield _run_test_case(test_case)
+            yield _run_test_case(test_case, plugins)
 
-def print_test_results(test_results, file=None):
+def print_test_results(test_results, plugins, file=None):
     """Print a stream of test results
 
     Each test error or failure will be printed to 'file'
@@ -282,17 +459,54 @@ def print_test_results(test_results, file=None):
     skipped = 0
     ok = 0
     for result in test_results:
-        if result['error']:
+        if result.is_error:
             errors += 1
-        elif result['failure']:
+        elif result.is_failure:
             failures += 1
-        elif result['skipped']:
+        elif result.skipped:
             skipped += 1
         else:
             ok += 1
-        if result['error'] or result['failure']:
-            _log.error('test %r failed', result['test_case'].group_and_name(), exc_info=result['error'] or result['failure'])
+        if result.is_error or result.is_failure:
+            _log.error('test %r failed', result.group_and_name)#, exc_info=result['error'] or result['failure'])
     _log.info('executed ok: %d, errors: %d, failures: %d, skipped: %d', ok, errors, failures, skipped) 
+
+class Plugin(object):
+    """Abstract Plugin class"""
+    def should_run_test_case(self, test_case):
+        """This is called before a test case is queued to be run
+
+        Arguments
+        test_case, TestCase
+
+        Returns
+        True -- the test case should be run
+        False -- the test case should not be run
+        """
+        return True
+
+    def will_run_test_case(self, test_case):
+        """This is called whenever a test case is about to be run"""
+        pass
+
+    def did_run_test_case(self, test_case, test_result):
+        """This is called whenever a test case is run with the test result dictionary"""
+        pass
+
+    def did_skip_test_case(self, test_case, test_result):
+        """This is called whenever a test case is skipped with the test case and test result"""
+        pass
+
+    def extra_test_case_requirements(self, test_case):
+        """This is called before test case requirements are setup to add any additional requirements
+
+        Arguments
+        test_case -- 
+
+        Returns
+        a list of context managers that take a Context argument
+        """
+        return []
 
 if __name__ == '__main__': 
     main()
