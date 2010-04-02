@@ -54,6 +54,7 @@ import contextlib
 import datetime
 import fcntl
 import logging
+import multiprocessing
 import operator
 import optparse
 import os
@@ -359,35 +360,34 @@ def run_test_cases_multithread(test_cases, num_workers, plugins):
             running -= 1
 
 def run_test_cases_multiprocess(test_cases, num_workers, plugins):
-    """Run test cases in a separate process for each."""
-    for tag, test_case in enumerate(test_cases):
+    """Run test cases in a separate process for each.
+    """
+    queue = multiprocessing.Queue()
+    running = {}
+    def run(num, test_case):
+        test_result = _run_test_case(test_case, plugins)
+        queue.put((num, test_result))
+
+    for i, test_case in enumerate(test_cases):
         skip_test_result = _is_skip_test_case(test_case, plugins)
         if skip_test_result:
             yield skip_test_result
             continue
-        r, w = os.pipe()
-        pid = os.fork()
-        if pid != 0: # we're the parent
-            os.close(w)
-            r = os.fdopen(r, 'r')
-            flags = fcntl.fcntl(r.fileno(), fcntl.F_GETFL)
-            fcntl.fcntl(r.fileno(), fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
-            somepid, status = os.waitpid(pid, 0)
-            buf = r.read()
-            obj = pickle.loads(buf)
-            r.close()
-            yield obj
-        else:
-            os.close(r)
-            w = os.fdopen(w, 'w')
-            flags = fcntl.fcntl(w.fileno(), fcntl.F_GETFL)
-            fcntl.fcntl(w.fileno(), fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
-            test_result = _run_test_case(test_case, plugins)
-            pickle.dump(test_result, w)
-            w.flush()
-            w.close()
-            sys.exit(0)
+        process = multiprocessing.Process(target=run, args=(i, test_case))
+        process.start()
+        running[i] = process
+        while len(running) >= num_workers:
+            worker_num, test_result = queue.get()
+            yield test_result
+            running[worker_num].join()
+            del running[worker_num]
 
+    while running:
+        worker_num, test_result = queue.get()
+        yield test_result
+        running[worker_num].join()
+        del running[worker_num]
+             
 class Context(dict):
     def __getattr__(self, attr):
         try:
