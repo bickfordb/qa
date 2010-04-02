@@ -1,11 +1,66 @@
-qa: Python Testing Library
---------------------------
+# qa
 
-### Basic Usage
+qa is simple testing library for Python.
 
-Each project should have a test runner module which imports all of the test module which need to run and executing "qa.main()" when the module is invoked as the main module.
+## Features
 
-#### runtests.py 
+   * Simple to use.  All tests are just functions decorated with `@qa.testcase`.  There's no class hierarchy to worry about.
+
+        @qa.testcase()
+        def something_should_happen(context):
+            if not something:
+                raise Exception
+
+   * Run tests concurrently without changing test code.
+     * Run tests with 20 process workers:
+
+            python runtests.py -c process -w 20
+
+     * Run tests with 5 thread workers:
+
+            python runtests.py -c thread -w 5
+
+   * Unlike *unittest* you can name your testcase functions whatever you like.
+   * There is no slow automatic-module-import-test-finding mechanism.  Import your test case modules once somewhere using standard Python import and your tests will get registered globally.
+   * Plugin interface to customize the behavior of test runs
+
+        class SomePlugin(qa.Plugin):
+            def did_run_test_case(self, test_case, test_result):
+                print test_case, "just ran with", test_result
+
+        qa.register_plugin(SomePlugin())
+
+   * Easily disable tests
+
+        @qa.testcase()
+        def obnoxious_test(context):
+            sleep(5000)
+
+        obnoxious_test.skip = True
+
+   * Easily add and compose setup and teardown prerequisites
+
+        @contextlib.contextmanager
+        def prereq_solar_system(context):
+            context.solar_system = SolarSystem()
+            yield
+            del context.solar_system
+
+        @contextlib.contextmanager
+        def prereq_world(context):
+            context.world = World(context.solar_system)
+            yield
+            del context.world
+
+        @qa.testcase(requires=[prereq.solar_system, prereq_world])
+        def expect_something(context):
+            qa.expect(context.world)
+
+## Basic Usage
+
+Each project should have a test runner module which imports all of the test module which need to run and executing `qa.main()` when the module is invoked as the main module.
+
+### runtests.py 
 
     #!/usr/bin/env python
     import qa
@@ -17,9 +72,9 @@ Each project should have a test runner module which imports all of the test modu
         # Run a and b tests
         qa.main()
 
-Here's an example test case module.  Test cases are built by writing functions and adding the "@qa.testcase()" decorator 
+Here's an example test case module.  Test cases are built by writing functions and adding the `@qa.testcase()` decorator 
 
-#### tests/mylibrary/addition.py
+### tests/mylibrary/addition.py
 
     import qa
 
@@ -31,8 +86,6 @@ Here's an example test case module.  Test cases are built by writing functions a
  
 ### Disabling tests
 
-    import qa
-
     @qa.testcase()
     def obnoxious_test(context):
         sleep(forever)
@@ -42,23 +95,9 @@ Here's an example test case module.  Test cases are built by writing functions a
 
 ### Test prerequisites (aka setup/teardown)
 
-Tests often have prequisites that need to be fulfilled before they run.  These prerequisites usually come in the form of setting up and tearing down data or resources that the test depends on.  To add a requirement to a test like this, invoke the testcase decorator like "@qa.testcase(requires=[requirement1, requirement2, ...])".  Each requirement function is a context manager which is nested around the test.  The requirement function is called with a "context" object argument that can be used to exchange data with the test function.  Multiple requirement functions can be supplied and they will be nested around the test run in the order listed. 
+Tests often have prequisites that need to be fulfilled before they run.  These prerequisites usually come in the form of setting up and tearing down data or resources that the test depends on.  To add a requirement to a test like this, invoke the testcase decorator like `@qa.testcase(requires=[requirement1, requirement2, ...])`.  Each requirement function is a context manager which is nested around the test.  The requirement function is called with a `context` object argument that can be used to exchange data with the test function.  Multiple requirement functions can be supplied and they will be nested around the test run in the order listed. 
 
-Here's an example of using the "qa.testcase" "requires" parameter:
-
-    import contextlib
-
-    import qa
-
-    @contextlib.contextmanager
-    def setup_sun_should_rise(context):
-        context.sun = True
-        yield
-        del context.sun
-
-    @qa.testcase(requires=[setup_sun_should_rise]):
-    def sun_should_rise(context):
-        qa.expect_eq(context.sun, True)
+Here's an example of using the `qa.testcase` `requires` parameter:
 
     @contextlib.contextmanager
     def setup_user(context):
@@ -83,7 +122,7 @@ Here's an example of using the "qa.testcase" "requires" parameter:
 
 ### Comparison to unittest
 
-Using the builtin "unittest" module, you write tests like the following:
+Using the builtin `unittest` module, you might write tests like the following:
 
     import unittest
 
@@ -108,7 +147,7 @@ Using the builtin "unittest" module, you write tests like the following:
             self.deleteMars(self.mars)
             super(MarsTestCase, self).tearDown()
 
-Using the "qa" module, you write tests like the following:
+Using the `qa` module, you write tests like the following:
 
     import contextlib
     import qa
