@@ -4,7 +4,7 @@ qa is simple testing library for Python.
 
 ## Features
 
-   * Simple to use.  All tests are just functions decorated with `@qa.testcase`.  There's no class hierarchy to worry about.
+   * Simple to use.  All tests are just functions decorated with `@qa.testcase`.  There's no gnarly class hierarchy to worry about.
 
         @qa.testcase()
         def something_should_happen(context):
@@ -41,18 +41,12 @@ qa is simple testing library for Python.
    * Easily add and compose setup and teardown prerequisites
 
         @contextlib.contextmanager
-        def prereq_solar_system(context):
-            context.solar_system = SolarSystem()
-            yield
-            del context.solar_system
-
-        @contextlib.contextmanager
-        def prereq_world(context):
-            context.world = World(context.solar_system)
+        def world(context):
+            context.world = World()
             yield
             del context.world
 
-        @qa.testcase(requires=[prereq.solar_system, prereq_world])
+        @qa.testcase(requires=[world])
         def expect_something(context):
             qa.expect(context.world)
 
@@ -95,7 +89,7 @@ Here's an example test case module.  Test cases are built by writing functions a
 
 ### Test prerequisites (aka setup/teardown)
 
-Tests often have prequisites that need to be fulfilled before they run.  These prerequisites usually come in the form of setting up and tearing down data or resources that the test depends on.  To add a requirement to a test like this, invoke the testcase decorator like `@qa.testcase(requires=[requirement1, requirement2, ...])`.  Each requirement function is a context manager which is nested around the test.  The requirement function is called with a `context` object argument that can be used to exchange data with the test function.  Multiple requirement functions can be supplied and they will be nested around the test run in the order listed. 
+Tests often have prequisites that need to be fulfilled before they run.  These prerequisites usually come in the form of setting up and tearing down data or resources that the test depends on.  To add a requirement to a test like this, invoke the testcase decorator like `@qa.testcase(requires=[feature1, feature2, ...])`.  Each requirement function is a context manager which is nested around the test.  The requirement function is called with a `context` object argument that can be used to exchange data with the test function.  Multiple requirement functions can be supplied and they will be nested around the test run in the order listed. 
 
 Here's an example of using the `qa.testcase` `requires` parameter:
 
@@ -153,18 +147,18 @@ Using the `qa` module, you write tests like the following:
     import qa
 
     @contextlib.contextmanager
-    def setup_galaxy(context):
+    def galaxy(context):
         galaxy = context.galaxy = Galaxy()
         yield
         del context.galaxy
 
     @contextlib.contextmanager
-    def setup_mars(context):
-        context.mars = Mars()
+    def mars(context):
+        context.mars = Mars(context.galaxy)
         yield
         del context.mars
 
-    @qa.testcase(requires=[setup_galaxy, setup_mars])
+    @qa.testcase(requires=[galaxy, mars])
     def check_mars(ctx):
         qa.expect_eq(ctx.mars.radius, expected_mars_radius)
         qa.expect_eq(ctx.mars.orbit, expected_mars_orbit)

@@ -49,6 +49,7 @@ def test_module1_with_a_user(ctx):
 """
 
 __author__ = 'Brandon Bickford <bickfordb@gmail.com>'
+__version__ = '0.1.0'
 
 import contextlib
 import datetime
@@ -262,7 +263,7 @@ def expect_raises(exc_type):
 option_parser = optparse.OptionParser()
 option_parser.add_option('-v', '--verbose', action='store_true')
 option_parser.add_option('-f', '--filter', dest='filter', action='append', help='Run only tests that match this regular epxression pattern.  Test names are of the form "dotted-module-path:function-name"', default=[])
-option_parser.add_option('-m', '--concurrency-mode', default='thread', choices=['single', 'process', 'thread'])
+option_parser.add_option('-c', '--concurrency-mode', default='thread', choices=['single', 'process', 'thread'])
 option_parser.add_option('-w', '--num-workers', default=10, type='int', help='The number of workers (if mode is "process" or "thread")')
 
 def _make_name_filter(patterns):
