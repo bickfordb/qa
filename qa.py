@@ -53,14 +53,12 @@ __version__ = '0.1.0'
 
 import contextlib
 import datetime
-import fcntl
 import logging
+import imp
 import multiprocessing
 import operator
 import optparse
 import os
-import cPickle as pickle 
-import marshal
 import re
 import sys
 import thread
@@ -68,11 +66,26 @@ import time
 import traceback
 import Queue
 
-all_test_cases = []
+# _qa_globals: This is a separate module which stores global state.  This
+# keeps global state (test case and plugin registration specifically) from
+# being duplicated by multiple instances of the 'qa' module being imported.
+# This can be happen when the module is imported as the main module (like via
+# 'python -m qa -m sometestmodule')
+
+try:
+    import _qa_globals
+except ImportError:
+    _qa_globals = imp.new_module('_qa_globals')
+    _qa_globals.all_test_cases = []
+    _qa_globals.plugins = []
+    sys.modules['_qa_globals'] = _qa_globals
 
 _log = logging.getLogger('qa')
+_test_run_log = logging.getLogger('qa.run')
+_test_result_log = logging.getLogger('qa.result')
+_registration_log = logging.getLogger('qa.register')
 
-def testcase(group=None, name=None, requires=()):
+def testcase(group=None, name=None, requires=(), is_global=True):
     """Decorator for creating a test case
 
     Arguments
@@ -91,10 +104,16 @@ def testcase(group=None, name=None, requires=()):
                 group_ = ''
         else:
             group_ = group
-        o = TestCase(group=group_, name=name_, callable=function, requires=requires, description=function.__doc__)
-        all_test_cases.append(o)
-        return o
+        a_test_case = TestCase(group=group_, name=name_, callable=function, requires=requires, description=function.__doc__)
+        if is_global:
+            register_test_case(a_test_case)
+        return a_test_case
     return case_decorator
+
+def register_test_case(test_case):
+    """Globally register a test case"""
+    _registration_log.debug('registering test case: %r', test_case)
+    _qa_globals.all_test_cases.append(test_case)
 
 class TestCase(object):
     """TestCase
@@ -114,7 +133,7 @@ class TestCase(object):
         return '%s:%s' % (self.group, self.name)
 
     def __repr__(self):
-        return u'TestCase(group=%(group)r, callable=%(callable)r, requires=%(requires)r, description=%(description)r)' % vars(self)
+        return u'TestCase(group=%(group)r, name=%(name)r, callable=%(callable)r, requires=%(requires)r, description=%(description)r)' % vars(self)
 
     def __hash__(self):
         return hash(type(self), self.group, self.callable, self.requires, self.description)
@@ -146,6 +165,9 @@ expect_not = make_expect_function(lambda x: not x, 'not %r', 'expect evaluates F
 expect = make_expect_function(lambda x: x, '%r', 'expect evaluates True')
 expect_contains = make_expect_function(operator.contains, '%r in %r', 'expect left is in right')
 expect_isinstance = make_expect_function(isinstance, '%r isinstance %r', 'expect left is an instance of right')
+
+def unlines(seq):
+    return os.linesep.join(seq)
 
 class TestResult(object):
     """A test result
@@ -179,20 +201,48 @@ class TestResult(object):
         self.ended_at = ended_at
 
     def __getstate__(self):
+
+        if not self.error_msg:
+            if self.error is not None:
+                error_msg = ''.join(traceback.format_exception(*self.error, limit=30))
+            else:
+                error_msg = ''
+        else:
+            error_msg = self.error_msg
+
+        if not self.failure_msg:
+            if self.failure is not None:
+                failure_msg = ''.join(traceback.format_exception(*self.failure, limit=30))
+            else:
+                failure_msg = ''
+        else:
+            failure_msg = self.failure_msg
+
         return {'group': self.group, 
                 'name': self.name,
                 'description': self.description,
                 'skipped': self.skipped,
                 'skipped_reason': self.skipped_reason,
-                'error': None, # exc_info isn't pickleable
-                'error_msg': self.error_msg if not self.error else 'Unpickleable error',
-                'failure': None, # exc_info isn't pickleable
-                'failure_msg': self.failure_msg if not self.failure else 'Unpickleable failure',
+                'error': None,
+                'error_msg': error_msg,
+                'failure': None,
+                'failure_msg': failure_msg,
                 'started_at': self.started_at,
                 'ended_at': self.ended_at}
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+
+    @property
+    def formatted_message(self):
+        if self.error:
+            return ''.join(traceback.format_exception(*self.error))
+        elif self.error_msg:
+            return self.error_msg
+        elif self.failure:
+            return ''.join(traceback.format_exception(*self.failure))
+        else:
+            return self.failure_msg
 
     @property
     def is_success(self):
@@ -262,9 +312,11 @@ def expect_raises(exc_type):
 
 option_parser = optparse.OptionParser()
 option_parser.add_option('-v', '--verbose', action='store_true')
+option_parser.add_option('-d', '--debug', action='store_true')
 option_parser.add_option('-f', '--filter', dest='filter', action='append', help='Run only tests that match this regular epxression pattern.  Test names are of the form "dotted-module-path:function-name"', default=[])
 option_parser.add_option('-c', '--concurrency-mode', default='thread', choices=['single', 'process', 'thread'])
 option_parser.add_option('-w', '--num-workers', default=10, type='int', help='The number of workers (if mode is "process" or "thread")')
+option_parser.add_option('-m', '--module', dest='modules', default=[], action='append')
 
 def _make_name_filter(patterns):
     if patterns:
@@ -281,40 +333,50 @@ def _make_name_filter(patterns):
 def main(init_logging=True, test_cases=None, plugins=None):
     """main method"""
     options, args = option_parser.parse_args()
+
     if init_logging:
-        level = logging.DEBUG if options.verbose else logging.INFO
+        level = logging.DEBUG if (options.verbose or options.debug) else logging.WARNING
         logging.basicConfig(level=level, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+    _test_run_log.setLevel(logging.INFO if not options.debug else logging.DEBUG)
+    _registration_log.setLevel(logging.INFO if not options.debug else logging.DEBUG)
+
     if test_cases is None:
-        test_cases = all_test_cases
+        test_cases = _qa_globals.all_test_cases
+
+    for module in options.modules:
+       __import__(module) 
+
     name_filter = _make_name_filter(options.filter)
     test_cases = (t for t in test_cases if name_filter(t))
 
     if plugins is None:
-        plugins = _plugins
+        plugins = _qa_globals.plugins
 
     if options.concurrency_mode == "single":
-        _log.debug('executing tests in single threaded mode')
+        _test_run_log.debug('executing tests in single threaded mode')
         test_results = run_test_cases_singlethread(test_cases, plugins=plugins)
     elif options.concurrency_mode == "process":
-        _log.debug('executing tests in multiprocess mode')
+        _test_run_log.debug('executing tests in multiprocess mode')
         test_results = run_test_cases_multiprocess(test_cases, num_workers=options.num_workers, plugins=plugins)
     else:
-        _log.debug('executing tests in multithreaded mode')
+        _test_run_log.debug('executing tests in multithreaded mode')
         test_results = run_test_cases_multithread(test_cases, num_workers=options.num_workers, plugins=plugins)
     print_test_results(test_results, plugins=plugins)
 
-_plugins = []
-
 def register_plugin(plugin):
-    if plugin not in _plugins:
-        _plugins.append(plugin)
+    _registration_log.debug('adding plugin %r', plugin)
+    if plugin not in _qa_globals.plugins:
+        _qa_globals.append(plugin)
+    else:
+        _registration_log.error('plugin %r already registered', plugin)
 
 def _run_and_queue_result(a_queue, tag, function, *args, **kwargs):
     try:
         result = function(*args, **kwargs)
         a_queue.put((tag, result))
     except Exception:
-        _log.exception('An exception occurred')
+        _test_run_log.exception('An exception occurred')
 
 def _is_skip_test_case(test_case, plugins):
     skip = test_case.skip
@@ -352,7 +414,7 @@ def run_test_cases_multithread(test_cases, num_workers, plugins):
             tag, result = queue.get()
             yield test_result
             running -= 1
-        _log.debug("starting %r", test_case)
+        _test_run_log.debug("starting %r", test_case)
         thread.start_new_thread(_run_and_queue_result, (queue, tag, _run_test_case, test_case, plugins))
         running += 1 
         while running > 0:
@@ -406,6 +468,10 @@ class Context(dict):
             raise AttributeError
 
 def _run_test_case(test_case, plugins):
+    """Helper method to run a test case.
+
+    This is shared between the multiprocess, multithread and single thread test runners.
+    """
     ctx = Context()
     error = None
     failure = None
@@ -420,7 +486,7 @@ def _run_test_case(test_case, plugins):
         requirements.extend(requirement(ctx) for requirement in test_case.requires)
         with contextlib.nested(*requirements):
             for plugin in plugins:
-                plugin.will_run_test_case(test_case)
+                plugin.will_run_test_case(test_case, ctx)
             test_case.callable(ctx)
         status = 'passed'
     except Failure:
@@ -430,9 +496,9 @@ def _run_test_case(test_case, plugins):
         status = 'crashed'
         test_result.error = sys.exc_info()
     test_result.ended_at = datetime.datetime.now()
-    _log.debug('test %s: %r', test_result.status, test_result.group_and_name)
+    _test_run_log.debug('test %s: %r', test_result.status, test_result.group_and_name)
     for plugin in plugins:
-        plugin.did_run_test_case(test_case, test_result)
+        plugin.did_run_test_case(test_case, test_result, ctx)
     return test_result
 
 def run_test_cases_singlethread(test_cases, plugins):
@@ -468,9 +534,13 @@ def print_test_results(test_results, plugins, file=None):
             skipped += 1
         else:
             ok += 1
-        if result.is_error or result.is_failure:
-            _log.error('test %r failed', result.group_and_name)#, exc_info=result['error'] or result['failure'])
-    _log.info('executed ok: %d, errors: %d, failures: %d, skipped: %d', ok, errors, failures, skipped) 
+        if result.is_success:
+            _test_result_log.info('test %r %s', result.group_and_name, result.status)
+        elif result.skipped:
+            _test_result_log.warning('test %r %s', result.group_and_name, result.status)
+        else:
+            _test_result_log.error('test %r %s:\n%s', result.group_and_name, result.status, result.formatted_message)
+    _test_result_log.info('executed ok: %d, errors: %d, failures: %d, skipped: %d', ok, errors, failures, skipped) 
 
 class Plugin(object):
     """Abstract Plugin class"""
@@ -486,11 +556,11 @@ class Plugin(object):
         """
         return True
 
-    def will_run_test_case(self, test_case):
+    def will_run_test_case(self, test_case, context):
         """This is called whenever a test case is about to be run"""
         pass
 
-    def did_run_test_case(self, test_case, test_result):
+    def did_run_test_case(self, test_case, test_result, context):
         """This is called whenever a test case is run with the test result dictionary"""
         pass
 
@@ -511,5 +581,3 @@ class Plugin(object):
 
 if __name__ == '__main__': 
     main()
-
-
