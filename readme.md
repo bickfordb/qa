@@ -6,6 +6,8 @@ qa is simple testing library for Python.
 
    * Simple to use.  All tests are just functions decorated with `@qa.testcase`.  There's no gnarly class hierarchy to worry about.
 
+        import qa
+
         @qa.testcase()
         def something_should_happen(context):
             if not something:
@@ -14,11 +16,11 @@ qa is simple testing library for Python.
    * Run tests concurrently without changing test code.
      * Run tests with 20 process workers:
 
-            python runtests.py -c process -w 20
+            python -m qa -m myproject.tests -c process -w 20
 
      * Run tests with 5 thread workers:
 
-            python runtests.py -c thread -w 5
+            python -m qa -m myproject.tests -c thread -w 5
 
    * Unlike *unittest* you can name your testcase functions whatever you like.
    * There is no slow automatic-module-import-test-finding mechanism.  Import your test case modules once somewhere using standard Python import and your tests will get registered globally.
@@ -52,7 +54,7 @@ qa is simple testing library for Python.
 
 ## Basic Usage
 
-Each project should have a test runner module which imports all of the test module which need to run and executing `qa.main()` when the module is invoked as the main module.
+Each project should probably have a test runner module which imports all of the test modules which need to run and executes `qa.main()` when the module is invoked as the main module.
 
 *runtests.py*
 
