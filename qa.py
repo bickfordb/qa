@@ -85,6 +85,14 @@ _test_run_log = logging.getLogger('qa.run')
 _test_result_log = logging.getLogger('qa.result')
 _registration_log = logging.getLogger('qa.register')
 
+RUN_SINGLETHREAD = 'single'
+RUN_MULTITHREAD = 'thread'
+RUN_MULTIPROCESS = 'process'
+
+RUN_MODES = [RUN_SINGLETHREAD, RUN_MULTITHREAD, RUN_MULTIPROCESS]
+
+DEFAULT_NUM_WORKERS = 10
+
 def testcase(group=None, name=None, requires=(), is_global=True):
     """Decorator for creating a test case
 
@@ -314,7 +322,7 @@ option_parser = optparse.OptionParser()
 option_parser.add_option('-v', '--verbose', action='store_true')
 option_parser.add_option('-d', '--debug', action='store_true')
 option_parser.add_option('-f', '--filter', dest='filter', action='append', help='Run only tests that match this regular epxression pattern.  Test names are of the form "dotted-module-path:function-name"', default=[])
-option_parser.add_option('-c', '--concurrency-mode', default='thread', choices=['single', 'process', 'thread'])
+option_parser.add_option('-c', '--concurrency-mode', default='thread', choices=[RUN_SINGLETHREAD, RUN_MULTIPROCESS, RUN_MULTITHREAD])
 option_parser.add_option('-w', '--num-workers', default=10, type='int', help='The number of workers (if mode is "process" or "thread")')
 option_parser.add_option('-m', '--module', dest='modules', default=[], action='append')
 
@@ -352,17 +360,22 @@ def main(init_logging=True, test_cases=None, plugins=None):
 
     if plugins is None:
         plugins = _qa_globals.plugins
-
-    if options.concurrency_mode == "single":
-        _test_run_log.debug('executing tests in single threaded mode')
-        test_results = run_test_cases_singlethread(test_cases, plugins=plugins)
-    elif options.concurrency_mode == "process":
-        _test_run_log.debug('executing tests in multiprocess mode')
-        test_results = run_test_cases_multiprocess(test_cases, num_workers=options.num_workers, plugins=plugins)
-    else:
-        _test_run_log.debug('executing tests in multithreaded mode')
-        test_results = run_test_cases_multithread(test_cases, num_workers=options.num_workers, plugins=plugins)
+    
+    test_results = run_test_cases(test_cases, mode=options.concurrency_mode, num_workers=options.num_workers, plugins=plugins)
     print_test_results(test_results, plugins=plugins)
+
+def run_test_cases(test_cases, mode=RUN_SINGLETHREAD, num_workers=None, plugins=None):
+    if mode == RUN_SINGLETHREAD:
+        _test_run_log.debug('executing tests in single threaded mode')
+        return _run_test_cases_singlethread(test_cases, plugins=plugins)
+    elif mode == RUN_MULTIPROCESS:
+        _test_run_log.debug('executing tests in multiprocess mode')
+        return _run_test_cases_multiprocess(test_cases, num_workers=num_workers, plugins=plugins)
+    elif mode == RUN_MULTITHREAD:
+        _test_run_log.debug('executing tests in multithreaded mode')
+        return _run_test_cases_multithread(test_cases, num_workers=num_workers, plugins=plugins)
+    else:
+        raise ValueError("unexpected mode", mode)
 
 def register_plugin(plugin):
     _registration_log.debug('adding plugin %r', plugin)
@@ -382,17 +395,18 @@ def _is_skip_test_case(test_case, plugins):
     skip = test_case.skip
     skip_reason = test_case.skip_reason
     if not skip:
-        for plugin in plugins:
-            should_run = plugin.should_run_test_case(test_case)
-            if should_run == True:
-                continue
-            elif should_run == False:
-                skip = True
-                skip_reason = ''
-            else:
-                skip = True
-                skip_reason = unicode(should_run)
-                break
+        if plugins is not None:
+            for plugin in plugins:
+                should_run = plugin.should_run_test_case(test_case)
+                if should_run == True:
+                    continue
+                elif should_run == False:
+                    skip = True
+                    skip_reason = ''
+                else:
+                    skip = True
+                    skip_reason = unicode(should_run)
+                    break
     if skip:
         return TestResult(
                 name=test_case.name,
@@ -401,8 +415,10 @@ def _is_skip_test_case(test_case, plugins):
                 skipped=True,
                 skipped_reason=test_case.skip_reason)
 
-def run_test_cases_multithread(test_cases, num_workers, plugins):
+def _run_test_cases_multithread(test_cases, num_workers, plugins):
     """Run test cases multithreaded"""
+    if num_workers is None:
+        num_workers = DEFAULT_NUM_WORKERS
     running = 0
     queue = Queue.Queue()
     for tag, test_case in enumerate(test_cases):
@@ -422,9 +438,12 @@ def run_test_cases_multithread(test_cases, num_workers, plugins):
             yield result
             running -= 1
 
-def run_test_cases_multiprocess(test_cases, num_workers, plugins):
+def _run_test_cases_multiprocess(test_cases, num_workers, plugins):
     """Run test cases in a separate process for each.
     """
+    if num_workers is None:
+        num_workers = DEFAULT_NUM_WORKERS
+
     queue = multiprocessing.Queue()
     running = {}
     def run(num, test_case):
@@ -497,11 +516,12 @@ def _run_test_case(test_case, plugins):
         test_result.error = sys.exc_info()
     test_result.ended_at = datetime.datetime.now()
     _test_run_log.debug('test %s: %r', test_result.status, test_result.group_and_name)
-    for plugin in plugins:
-        plugin.did_run_test_case(test_case, test_result, ctx)
+    if plugins is not None:
+        for plugin in plugins:
+            plugin.did_run_test_case(test_case, test_result, ctx)
     return test_result
 
-def run_test_cases_singlethread(test_cases, plugins):
+def _run_test_cases_singlethread(test_cases, plugins):
     """Run a list of test cases in a single thread"""
     for test_case in test_cases:
         skip_test_result = _is_skip_test_case(test_case, plugins)
