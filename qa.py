@@ -6,6 +6,22 @@ A "test runner" module that is responsible for running the tests for each
 project.  Tests for each module or piece of functionality is often grouped
 together into one test module.  
 
+Quick example
+=============
+
+*foo.py*
+
+    import qa
+
+    @qa.testcase()
+    def expect_something(context):
+        assert 1 + 1 == 2
+
+Run the code: python -m qa -m foo
+
+Large Example
+==============
+
 An example project might look like the following:
 
  - project/ 
@@ -586,6 +602,18 @@ class Plugin(object):
 
     def did_skip_test_case(self, test_case, test_result):
         """This is called whenever a test case is skipped with the test case and test result"""
+        pass
+
+    def will_fork(self):
+        pass
+
+    def did_fork(self):
+        pass
+
+    def will_clone(self):
+        pass
+
+    def did_clone(self):
         pass
 
     def extra_test_case_requirements(self, test_case):
