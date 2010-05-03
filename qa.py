@@ -338,7 +338,7 @@ option_parser = optparse.OptionParser()
 option_parser.add_option('-v', '--verbose', action='store_true')
 option_parser.add_option('-d', '--debug', action='store_true')
 option_parser.add_option('-f', '--filter', dest='filter', action='append', help='Run only tests that match this regular epxression pattern.  Test names are of the form "dotted-module-path:function-name"', default=[])
-option_parser.add_option('-c', '--concurrency-mode', default='thread', choices=[RUN_SINGLETHREAD, RUN_MULTIPROCESS, RUN_MULTITHREAD])
+option_parser.add_option('-c', '--concurrency-mode', default='single', choices=[RUN_SINGLETHREAD, RUN_MULTIPROCESS, RUN_MULTITHREAD])
 option_parser.add_option('-w', '--num-workers', default=10, type='int', help='The number of workers (if mode is "process" or "thread")')
 option_parser.add_option('-m', '--module', dest='modules', default=[], action='append')
 
